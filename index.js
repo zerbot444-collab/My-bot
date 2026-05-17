@@ -1,7 +1,8 @@
 const { 
     default: makeWASocket, 
     useMultiFileAuthState, 
-    DisconnectReason 
+    DisconnectReason,
+    delay
 } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const fs = require('fs');
@@ -23,13 +24,31 @@ async function startBot() {
 
     const sock = makeWASocket({
         logger: pino({ level: 'silent' }),
-        printQRInTerminal: true,
+        printQRInTerminal: false, // ෆෝන් එකෙන් කරන නිසා QR පෙන්වන එක නවත්වනවා
         auth: state
     });
 
     sock.ev.on('creds.update', saveCreds);
 
-    // 1. Connection Update Logic (Start Message With Photo)
+    // ==================== PAIRING CODE LOGIC ====================
+    // ඔයා දැනටමත් ලින්ක් කරලා නැත්නම් සහ config එකේ නම්බර් එකක් තියෙනවා නම් විතරක් කෝඩ් එක ඉල්ලනවා
+    if (!sock.authState.creds.registered && config.OWNER_NUMBER) {
+        let phoneNumber = config.OWNER_NUMBER.replace(/[^0-9]/g, ''); // ඉලක්කම් විතරක් වෙන් කරගන්නවා
+        
+        await delay(3000); // සර්වර් එක ලෑස්ති වෙනකන් තත්පර 3ක් ඉන්නවා
+        try {
+            let code = await sock.requestPairingCode(phoneNumber);
+            console.log('\n=============================================');
+            console.log(`📌 මෙන්න ඔයාගේ බොට් කනෙක්ටින් කෝඩ් එක: 👉 ${code} 👈`);
+            console.log('=============================================\n');
+            console.log('💡 පියවර: WhatsApp -> Linked Devices -> Link with phone number instead ගොස් මේ කෝඩ් එක ඇතුලත් කරන්න.\n');
+        } catch (error) {
+            console.log('Pairing Code ලබාගැනීමේදී දෝෂයක්: ', error);
+        }
+    }
+    // ============================================================
+
+    // Connection Update Logic (Start Message With Photo)
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect } = update;
         
@@ -41,7 +60,6 @@ async function startBot() {
         else if (connection === 'open') {
             console.log('බොට් සාර්ථකව WhatsApp සමඟ සම්බන්ධ වුණා! ✅🤖');
 
-            // බොට් ස්ටාර්ට් වුණාම තමන්ගේම නම්බර් එකට ෆොටෝ එකක් සහ මැසේජ් එකක් යැවීම
             try {
                 let myJid = sock.user.id.split(':')[0] + '@s.whatsapp.net';
                 let startMsg = `✨ *ALPHA BOT IS ALIVE* ✨\n\n` +
@@ -51,7 +69,7 @@ async function startBot() {
                                `© 2026 Developed by Nexus Tech Team`;
 
                 await sock.sendMessage(myJid, { 
-                    image: { url: config.START_PHOTO }, 
+                    image: { url: config.START_PHOTO || "https://catbox.moe/c/xxxxxx.jpg" }, 
                     caption: startMsg 
                 });
                 console.log('Start Message එක සාර්ථකව ඔයාගේ Chat එකට යැව්වා! 📸');
@@ -61,34 +79,23 @@ async function startBot() {
         }
     });
 
-    // 2. Messages Upsert Logic (Commands & Auto Status React/Seen)
+    // Messages Upsert Logic (Commands & Auto Status React/Seen)
     sock.ev.on('messages.upsert', async m => {
         const msg = m.messages[0];
         if (!msg.message) return;
 
         const from = msg.key.remoteJid;
 
-        // ==================== AUTO STATUS SEEN & REACT ====================
+        // Auto Status Seen & React
         if (from === 'status@broadcast') {
-            // Auto Status Seen (ස්ටේටස් ඔටෝ බැලීම)
-            if (config.AUTO_STATUS_READ === 'true') {
-                await sock.readMessages([msg.key]);
-                console.log(`👀 Status Seen: ${msg.pushName || 'User'}`);
-            }
-
-            // Auto Status React (ස්ටේටස් වලට ඔටෝ රියැක්ට් කිරීම)
+            if (config.AUTO_STATUS_READ === 'true') await sock.readMessages([msg.key]);
             if (config.AUTO_STATUS_REACT === 'true') {
                 await sock.sendMessage(from, {
-                    react: {
-                        key: msg.key,
-                        text: config.STATUS_REACT_EMOJI
-                    }
+                    react: { key: msg.key, text: config.STATUS_REACT_EMOJI || "💖" }
                 }, { statusJidList: [msg.key.participant] });
-                console.log(`💖 Status Reacted to ${msg.pushName || 'User'}`);
             }
-            return; // ස්ටේටස් මැසේජ් එකක් නම් මෙතනින් එහාට කමාන්ඩ් චෙක් කරන්න යන්නේ නැහැ
+            return;
         }
-        // ===================================================================
 
         if (msg.key.fromMe) return;
 
@@ -109,7 +116,6 @@ async function startBot() {
 
         const isOwner = from.startsWith(config.OWNER_NUMBER);
 
-        // Plugins Handler Loop
         for (const cmd of commands) {
             if (cmd.pattern && command === cmd.pattern) {
                 await cmd.function(sock, msg, m, { from, body, isCmd, command, args, q, isOwner, reply });
